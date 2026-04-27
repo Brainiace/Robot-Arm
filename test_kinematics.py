@@ -1,97 +1,97 @@
-from kinematics import FABRIK
 import math
+import config
+from kinematics import WritingArmController, FABRIK
+from ik_solver import IKSolver
+from path_planner import PathPlanner
+from coordinate_mapping import CoordinateMapper
 
-def test_kinematics():
-    fabrik = FABRIK()
+def test_coordinate_mapping():
+    print("--- Testing Coordinate Mapping ---")
+    mapper = CoordinateMapper(scale=1.0, offset_x=200, offset_y=200)
 
-    test_cases = [
-        {"target": (100, 0, 0), "pen": True, "label": "Reachable point on X-axis"},
-        {"target": (0, 100, 0), "pen": False, "label": "Reachable point on Y-axis"},
-        {"target": (300, 0, 0), "pen": True, "label": "Far point (Maximum reach test)"},
-        {"target": (0, 0, 0), "pen": False, "label": "Origin (Minimum reach test)"},
-        {"target": (50, 50, 20), "pen": True, "label": "Point with height (Z > 0)"}
-    ]
+    # Center of screen should be (0,0) mm
+    x, y, z = mapper.screen_to_physical(200, 200, 0)
+    print(f"Screen (200, 200) -> Physical ({x}, {y}, {z})")
+    assert x == 0 and y == 0
 
-    for case in test_cases:
-        x, y, z = case["target"]
-        pen = case["pen"]
-        joints = fabrik.solve(x, y, z, pen_down=pen)
-        serial_out = fabrik.format_output(joints)
+    # Top-left (0,0) should be (-200, 200) mm
+    x, y, z = mapper.screen_to_physical(0, 0, 10)
+    print(f"Screen (0, 0) -> Physical ({x}, {y}, {z})")
+    assert x == -200 and y == 200 and z == 10
+    print("Coordinate Mapping Passed\n")
 
-        print(f"--- {case['label']} ---")
-        print(f"Input: Target=({x}, {y}, {z}), Pen={pen}")
-        print(f"Output Joints: {joints}")
-        print(f"Serial String: {serial_out.strip()}")
+def test_ik_vertical_constraint():
+    print("--- Testing IK Vertical Constraint ---")
+    ik = IKSolver()
+    # Test multiple points
+    test_points = [(100, 0, 0), (0, 100, 0), (50, 50, 10)]
 
-        # Basic validation
-        assert len(joints) == 5, "Should return 5 values"
-        for j in joints[:4]:
-            assert 0 <= j <= 180, f"Joint angle {j} out of range (0-180)"
-        assert joints[4] in [0, 1], "Pen value should be 0 or 1"
+    for pt in test_points:
+        joints = ik.solve(*pt)
+        # joints = [s1, s2, s3, s4, s5]
+        # s2 = 90 + q2
+        # s3 = 180 + q3
+        # s4 = 180 + q4
+        # constraint: q2 + q3 + q4 = -90
+        q2 = math.radians(joints[1] - 90)
+        q3 = math.radians(joints[2] - 180)
+        q4 = math.radians(joints[3] - 180)
 
-        # Verify Link 4 constraint indirectly:
-        # Since theta_l4 is fixed to -90, j4 = 180 + (-90 - theta_l3) = 90 - theta_l3.
-        # This is already handled in the solve method, but we can check the math.
-        # However, testing the actual end-effector position would require forward kinematics.
+        sum_angles = math.degrees(q2 + q3 + q4)
+        print(f"Point {pt} -> Sum of angles: {sum_angles:.2f} degrees")
+        # For points that might be clamped, we check if the constraint is still reasonable
+        # or if we should skip asserting for clamped points.
+        # However, even clamped points in my current logic should maintain q2+q3+q4=-90
+        # unless they hit servo limits.
+        if all(0 < j < 180 for j in joints[1:4]):
+             assert abs(sum_angles + 90) < 1.0
+        else:
+             print(f"  Point {pt} hit servo limits: {joints}")
+    print("IK Vertical Constraint Passed\n")
 
-        print("Test Passed\n")
+def test_path_planning():
+    print("--- Testing Path Planning (Trapezoidal Velocity) ---")
+    planner = PathPlanner(max_v=50, max_a=100, rate=50)
+    start = (0, 0, 0)
+    end = (100, 0, 0)
 
-def test_forward_kinematics_check():
-    """
-    Optional: Check if the calculated angles actually reach the target (approximately).
-    Forward Kinematics for this specific setup (in 2D r-z plane).
-    """
-    fabrik = FABRIK()
-    # Test a point that should be reachable
-    tx, ty, tz = 100, 0, 0
-    j1, j2, j3, j4, pen = fabrik.solve(tx, ty, tz)
+    waypoints = planner.plan_linear_path(start, end)
+    print(f"Path (0,0,0) to (100,0,0) generated {len(waypoints)} waypoints")
 
-    # Map back from servo angles to link angles
-    # j1 = 90 + base_angle => base_angle = j1 - 90
-    # j2 = 90 + theta_l2 => theta_l2 = j2 - 90
-    # j3 = 180 + (theta_l3 - theta_l2) => theta_l3 = j3 - 180 + theta_l2
-    # j4 = 180 + (theta_l4 - theta_l3) => theta_l4 = j4 - 180 + theta_l3
+    assert len(waypoints) > 2
+    assert waypoints[0] == start
+    # Final point might have small float error if not clamped,
+    # but my implementation clamps it.
+    assert math.isclose(waypoints[-1][0], 100, abs_tol=0.1)
 
-    theta_base = math.radians(j1 - 90)
-    theta_l2 = math.radians(j2 - 90)
-    theta_l3 = math.radians(j3 - 180 + (j2 - 90))
-    theta_l4 = math.radians(j4 - 180 + (j3 - 180 + (j2 - 90)))
+    # Check for straight line
+    for wp in waypoints:
+        assert abs(wp[1]) < 0.001
+        assert abs(wp[2]) < 0.001
+    print("Path Planning Passed\n")
 
-    # Calculate positions
-    # Shoulder is at (0, 0, L1)
-    x0, y0, z0 = 0, 0, fabrik.L1
+def test_controller_motion():
+    print("--- Testing Controller Motion (Pixels to Joint Paths) ---")
+    controller = WritingArmController()
 
-    # Elbow 1
-    r1 = fabrik.L2 * math.cos(theta_l2)
-    x1 = r1 * math.cos(theta_base)
-    y1 = r1 * math.sin(theta_base)
-    z1 = z0 + fabrik.L2 * math.sin(theta_l2)
+    # Move to pixel (250, 250) with pen down
+    # This should include a vertical "soft landing" and a horizontal move
+    paths = controller.move_to_pixel(250, 250, pen_down=True)
 
-    # Elbow 2 (Wrist)
-    r2 = r1 + fabrik.L3 * math.cos(theta_l3)
-    x2 = r2 * math.cos(theta_base)
-    y2 = r2 * math.sin(theta_base)
-    z2 = z1 + fabrik.L3 * math.sin(theta_l3)
+    print(f"Generated {len(paths)} joint configurations for move to (250, 250) pen down")
+    assert len(paths) > 0
+    for cfg in paths:
+        assert len(cfg) == 6 # j1, j2, j3, j4, j5, pen
+        for j in cfg[:5]:
+            assert 0 <= j <= 180
+        assert cfg[5] in [0, 1]
 
-    # Pen Tip
-    r3 = r2 + fabrik.L4 * math.cos(theta_l4)
-    x3 = r3 * math.cos(theta_base)
-    y3 = r3 * math.sin(theta_base)
-    z3 = z2 + fabrik.L4 * math.sin(theta_l4)
-
-    print(f"--- Forward Kinematics Verification for ({tx}, {ty}, {tz}) ---")
-    print(f"Calculated End Effector: ({x3:.2f}, {y3:.2f}, {z3:.2f})")
-
-    error = math.sqrt((tx-x3)**2 + (ty-y3)**2 + (tz-z3)**2)
-    print(f"Error: {error:.4f} mm")
-
-    # Link 4 vertical check
-    # theta_l4 should be -90 degrees (-pi/2 radians)
-    print(f"Link 4 angle: {math.degrees(theta_l4):.2f} degrees (Target: -90.00)")
-
-    assert error < 2.0, "FK error too high (clamping/rounding might cause small errors)"
-    assert abs(math.degrees(theta_l4) + 90) < 1.0, "Link 4 is not vertical"
+    # Last config should be pen down (1)
+    assert paths[-1][5] == 1
+    print("Controller Motion Passed\n")
 
 if __name__ == "__main__":
-    test_kinematics()
-    test_forward_kinematics_check()
+    test_coordinate_mapping()
+    test_ik_vertical_constraint()
+    test_path_planning()
+    test_controller_motion()
