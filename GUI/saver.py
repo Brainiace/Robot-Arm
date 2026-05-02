@@ -9,17 +9,12 @@
 # ================================================================
 
 import csv
-from settings import CANVAS_WIDTH, CANVAS_HEIGHT, ROBOT_RANGE_MM
+from coordinate_mapping import CoordinateMapper
 
+# Initialize mapper globally or pass it in
+_mapper = CoordinateMapper()
 
-def pixels_to_mm(px, py, offset_x, offset_y):
-    """Convert canvas pixel (px, py) into robot millimeter coordinates."""
-    rx = round((px / CANVAS_WIDTH)  * ROBOT_RANGE_MM + offset_x, 2)
-    ry = round((py / CANVAS_HEIGHT) * ROBOT_RANGE_MM + offset_y, 2)
-    return rx, ry
-
-
-def save_to_csv(points, offset_x, offset_y):
+def save_to_csv(points, offset_x=None, offset_y=None):
     """
     Write all points to drawing.csv.
     Returns a short status message string.
@@ -27,12 +22,16 @@ def save_to_csv(points, offset_x, offset_y):
     if not points:
         return "Nothing to save! Draw first."
 
+    # Refresh mapper if needed or use passed offsets if they are different
+    # For now, we trust CoordinateMapper to have the latest via load_settings
+    _mapper.load_settings()
+
     with open("drawing.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["x_pixel", "y_pixel", "robot_x_mm", "robot_y_mm", "pen_state"])
         for (px, py, pen) in points:
-            rx, ry = pixels_to_mm(px, py, offset_x, offset_y)
-            writer.writerow([px, py, rx, ry, pen])
+            rx, ry, rz = _mapper.screen_to_physical(px, py)
+            writer.writerow([px, py, round(rx, 2), round(ry, 2), pen])
 
     print(f"[SAVED] {len(points)} points → drawing.csv")
     return f"Saved {len(points)} points!"
