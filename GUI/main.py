@@ -18,12 +18,16 @@
 # ================================================================
 
 import pygame
+import os
 
 # Our own modules
 from settings import *
 from buttons  import CircleButton, PillButton, ValueBox
 from canvas   import Canvas
 from saver    import save_to_csv
+import config
+from calibration_manager import load_calibration, save_calibration
+from kinematics import WritingArmController
 
 
 # ----------------------------------------------------------------
@@ -51,10 +55,11 @@ icon_eraser = emoji_font.render("🧹", True, BLACK)
 
 
 # ----------------------------------------------------------------
-#  CANVAS
+#  CANVAS & CONTROLLER
 # ----------------------------------------------------------------
 
 canvas = Canvas()
+controller = WritingArmController()
 
 
 # ----------------------------------------------------------------
@@ -114,6 +119,21 @@ btn_minus_y = PillButton(COL2, ROW_MINUS, BTN_W, BTN_H,
                          "-Y", ORANGE_FILL, ORANGE_BORDER, ORANGE_TEXT)
 btn_minus_z = PillButton(COL3, ROW_MINUS, BTN_W, BTN_H,
                          "-Z", ORANGE_FILL, ORANGE_BORDER, ORANGE_TEXT)
+
+# ── CALIBRATION MODULE ──────────────────────────────────────────
+CAL_X = PANEL_X
+CAL_Y = ROW_MINUS + BTN_H + 40
+CAL_BTN_W = 100
+CAL_BTN_H = 40
+CAL_GAP = 10
+
+btn_tl = PillButton(CAL_X, CAL_Y, CAL_BTN_W, CAL_BTN_H, "T-L", ORANGE_FILL, ORANGE_BORDER, BLACK)
+btn_tr = PillButton(CAL_X + CAL_BTN_W + CAL_GAP, CAL_Y, CAL_BTN_W, CAL_BTN_H, "T-R", ORANGE_FILL, ORANGE_BORDER, BLACK)
+btn_bl = PillButton(CAL_X, CAL_Y + CAL_BTN_H + CAL_GAP, CAL_BTN_W, CAL_BTN_H, "B-L", ORANGE_FILL, ORANGE_BORDER, BLACK)
+btn_br = PillButton(CAL_X + CAL_BTN_W + CAL_GAP, CAL_Y + CAL_BTN_H + CAL_GAP, CAL_BTN_W, CAL_BTN_H, "B-R", ORANGE_FILL, ORANGE_BORDER, BLACK)
+btn_center = PillButton(CAL_X + (CAL_BTN_W + CAL_GAP) * 2, CAL_Y + CAL_BTN_H // 2 + CAL_GAP // 2, CAL_BTN_W, CAL_BTN_H, "CENTER", ORANGE_FILL, ORANGE_BORDER, BLACK)
+
+btn_save_cal = PillButton(CAL_X, CAL_Y + (CAL_BTN_H + CAL_GAP) * 2 + 10, BTN_W * 2, BTN_H, "SAVE SURFACE", GREEN_FILL, GREEN_BORDER, GREEN_TEXT)
 
 
 # ----------------------------------------------------------------
@@ -182,9 +202,11 @@ def draw_bobot(surface, x, y, scale=10):
 #  APP STATE
 # ----------------------------------------------------------------
 
-offset_x = 0.0
-offset_y = 0.0
-offset_z = 0.0
+cal_data = load_calibration()
+offset_x = cal_data["offset_x"]
+offset_y = cal_data["offset_y"]
+offset_z = cal_data["offset_z"]
+scale    = cal_data["scale"]
 
 message       = ""
 message_timer = 0
@@ -212,7 +234,7 @@ while running:
             if event.key == pygame.K_q:
                 running = False
             if event.key == pygame.K_s:
-                message = save_to_csv(canvas.get_points(), offset_x, offset_y)
+                message = save_to_csv(canvas.get_points())
                 message_timer = 130
 
     # ── Bottom circle button clicks ─────────────────────────────
@@ -245,6 +267,59 @@ while running:
     if btn_minus_y.was_clicked(events): offset_y = round(offset_y - 0.1, 1)
     if btn_plus_z.was_clicked(events):  offset_z = round(offset_z + 0.1, 1)
     if btn_minus_z.was_clicked(events): offset_z = round(offset_z - 0.1, 1)
+
+    # Update mapper if offsets changed
+    canvas.mapper.offset_x = offset_x
+    canvas.mapper.offset_y = offset_y
+    canvas.mapper.offset_z = offset_z
+
+    controller.mapper.offset_x = offset_x
+    controller.mapper.offset_y = offset_y
+    controller.mapper.offset_z = offset_z
+
+    # ── Calibration Button clicks ───────────────────────────────
+    hover_z = offset_z + 10.0
+    if btn_tl.was_clicked(events):
+        message = "Moving to Top-Left (Hover)"
+        message_timer = 100
+        # Physical coordinates for corners
+        # Top-Left pixel is (0,0) in canvas-local
+        paths = controller.move_to_pixel(0, 0, pen_down=False)
+        print(f"Robot Target: Top-Left (Hover Z={hover_z}mm)")
+
+    if btn_tr.was_clicked(events):
+        message = "Moving to Top-Right (Hover)"
+        message_timer = 100
+        paths = controller.move_to_pixel(CANVAS_WIDTH, 0, pen_down=False)
+        print(f"Robot Target: Top-Right (Hover Z={hover_z}mm)")
+
+    if btn_bl.was_clicked(events):
+        message = "Moving to Bottom-Left (Hover)"
+        message_timer = 100
+        paths = controller.move_to_pixel(0, CANVAS_HEIGHT, pen_down=False)
+        print(f"Robot Target: Bottom-Left (Hover Z={hover_z}mm)")
+
+    if btn_br.was_clicked(events):
+        message = "Moving to Bottom-Right (Hover)"
+        message_timer = 100
+        paths = controller.move_to_pixel(CANVAS_WIDTH, CANVAS_HEIGHT, pen_down=False)
+        print(f"Robot Target: Bottom-Right (Hover Z={hover_z}mm)")
+
+    if btn_center.was_clicked(events):
+        message = "Moving to Center (Hover)"
+        message_timer = 100
+        paths = controller.move_to_pixel(CANVAS_WIDTH//2, CANVAS_HEIGHT//2, pen_down=False)
+        print(f"Robot Target: Center (Hover Z={hover_z}mm)")
+
+    if btn_save_cal.was_clicked(events):
+        if save_calibration(scale, offset_x, offset_y, offset_z):
+            message = "Calibration SAVED!"
+            # Re-load to ensure everything is in sync
+            canvas.mapper.load_settings()
+            controller.mapper.load_settings()
+        else:
+            message = "Save FAILED!"
+        message_timer = 150
 
     # ── Canvas drawing ──────────────────────────────────────────
     canvas.handle_events(events)
@@ -287,6 +362,14 @@ while running:
     btn_minus_y.draw(screen)
     btn_minus_z.draw(screen)
 
+    # ── Calibration Buttons ─────────────────────────────────────
+    btn_tl.draw(screen)
+    btn_tr.draw(screen)
+    btn_bl.draw(screen)
+    btn_br.draw(screen)
+    btn_center.draw(screen)
+    btn_save_cal.draw(screen)
+
     # ── BOBOT pixel text (bottom right) ────────────────────────
     draw_bobot(screen, BOBOT_X, BOBOT_Y, scale=10)
 
@@ -307,7 +390,7 @@ while running:
     status = (f"Tool: {canvas.tool.upper()}  |  "
               f"Points: {len(canvas.get_points())}  |  "
               f"Strokes: {canvas.stroke_count}  |  "
-              f"Offset  X={offset_x:+.1f}  Y={offset_y:+.1f}  Z={offset_z:+.1f} mm  |  "
+              f"Offset  X={offset_x:.1f} Y={offset_y:.1f} Z={offset_z:.1f}  |  "
               f"[S] Save    [Q] Quit")
     s = font_status.render(status, True, STATUS_TEXT)
     screen.blit(s, (CANVAS_X, WINDOW_HEIGHT - 18))

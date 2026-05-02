@@ -4,20 +4,28 @@ from kinematics import WritingArmController, FABRIK
 from ik_solver import IKSolver
 from path_planner import PathPlanner
 from coordinate_mapping import CoordinateMapper
+import os
 
 def test_coordinate_mapping():
     print("--- Testing Coordinate Mapping ---")
-    mapper = CoordinateMapper(scale=1.0, offset_x=200, offset_y=200)
+    # Clean up calibration.json to use defaults
+    if os.path.exists("calibration.json"):
+        os.remove("calibration.json")
 
-    # Center of screen should be (0,0) mm
-    x, y, z = mapper.screen_to_physical(200, 200, 0)
-    print(f"Screen (200, 200) -> Physical ({x}, {y}, {z})")
+    mapper = CoordinateMapper()
+    # Defaults: offset_x=295, offset_y=400, scale=0.5
+
+    # Center-bottom of canvas should be (0,0) mm
+    x, y, z = mapper.screen_to_physical(295, 400, 0)
+    print(f"Screen (295, 400) -> Physical ({x}, {y}, {z})")
     assert x == 0 and y == 0
 
-    # Top-left (0,0) should be (-200, 200) mm
+    # Top-left (0,0) should be:
+    # x = (0 - 295) * 0.5 = -147.5
+    # y = (400 - 0) * 0.5 = 200.0
     x, y, z = mapper.screen_to_physical(0, 0, 10)
     print(f"Screen (0, 0) -> Physical ({x}, {y}, {z})")
-    assert x == -200 and y == 200 and z == 10
+    assert x == -147.5 and y == 200.0 and z == 10
     print("Coordinate Mapping Passed\n")
 
 def test_ik_vertical_constraint():
@@ -41,8 +49,6 @@ def test_ik_vertical_constraint():
         print(f"Point {pt} -> Sum of angles: {sum_angles:.2f} degrees")
         # For points that might be clamped, we check if the constraint is still reasonable
         # or if we should skip asserting for clamped points.
-        # However, even clamped points in my current logic should maintain q2+q3+q4=-90
-        # unless they hit servo limits.
         if all(0 < j < 180 for j in joints[1:4]):
              assert abs(sum_angles + 90) < 1.0
         else:
@@ -60,8 +66,6 @@ def test_path_planning():
 
     assert len(waypoints) > 2
     assert waypoints[0] == start
-    # Final point might have small float error if not clamped,
-    # but my implementation clamps it.
     assert math.isclose(waypoints[-1][0], 100, abs_tol=0.1)
 
     # Check for straight line
@@ -74,11 +78,11 @@ def test_controller_motion():
     print("--- Testing Controller Motion (Pixels to Joint Paths) ---")
     controller = WritingArmController()
 
-    # Move to pixel (250, 250) with pen down
-    # This should include a vertical "soft landing" and a horizontal move
-    paths = controller.move_to_pixel(250, 250, pen_down=True)
+    # Move to pixel (300, 300) with pen down
+    # (300, 300) pixels -> ( (300-295)*0.5, (400-300)*0.5 ) = (2.5, 50.0) mm
+    paths = controller.move_to_pixel(300, 300, pen_down=True)
 
-    print(f"Generated {len(paths)} joint configurations for move to (250, 250) pen down")
+    print(f"Generated {len(paths)} joint configurations for move to (300, 300) pen down")
     assert len(paths) > 0
     for cfg in paths:
         assert len(cfg) == 6 # j1, j2, j3, j4, j5, pen
